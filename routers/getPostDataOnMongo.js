@@ -179,7 +179,7 @@ router.post("/sendmessage",authMiddleware, async (req, res) => {
       } else {
         const providerError = error.response?.data || error.message;
         console.error('Error occurred while sending message:', providerError);
-        return res.status(500).json({
+        return res.status(502).json({
           error: 'An error occurred while saving the message.',
           details: typeof providerError === 'string' ? providerError : providerError?.error?.message || 'Request failed.',
         });
@@ -296,8 +296,19 @@ router.post("/sendfirstmessage",authMiddleware, async (req, res) => {
         retries += 1;
         await new Promise(resolve => setTimeout(resolve, 200)); 
       } else {
-        console.error('Error occurred:', error);
-        return res.status(500).json({ error: 'An error occurred while saving the message.' });
+        const details = error.response?.data?.error?.message ||
+          error.response?.data?.error?.error_data?.details ||
+          error.message ||
+          'Unknown error';
+        console.error('Error occurred while sending first message:', {
+          message: details,
+          code: error.response?.data?.error?.code || error.code,
+          status: error.response?.status,
+        });
+        return res.status(502).json({
+          error: 'Message could not be sent or saved.',
+          details,
+        });
       }
     }
   }
@@ -664,6 +675,7 @@ function sendHiddenMsg(text,chatid) {
 }
 //to sent TEXT message
 async function sendMessage(to, message,chatid) {
+  const recipient = String(to || '').replace(/^\+/, '');
   const result = await axios({
     url: `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`,
     method: 'post',
@@ -673,11 +685,12 @@ async function sendMessage(to, message,chatid) {
     },
     data: JSON.stringify({
       messaging_product: 'whatsapp',
-      to,
+      to: recipient,
       type: message.type,
       text: {
         body:sendHiddenMsg(message.text.body,chatid)
-      }
+      },
+      timeout: 15000,
     })
   })
   return result.data; 
@@ -692,7 +705,7 @@ async function sendTemplateMessage(to, templateName, languageCode, components = 
       `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
-        to,
+        to: String(to || '').replace(/^\+/, ''),
         type: "template", 
         template: {
           name: templateName,
@@ -705,6 +718,7 @@ async function sendTemplateMessage(to, templateName, languageCode, components = 
           Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
           "Content-Type": "application/json",
         },
+        timeout: 15000,
       }
     );
 
