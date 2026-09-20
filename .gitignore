@@ -1,0 +1,4 @@
+/node_modules
+# /.envFolderLinkGeneration.json
+.env
+FolderLinkGeneration.json

@@ -1,0 +1,11 @@
+[build]
+  functions = "functions"
+  publish = "public"
+
+[functions]
+  node_bundler = "esbuild"
+
+[dev]
+  functions = "functions"
+  publish = "public"
+  port = 8888
