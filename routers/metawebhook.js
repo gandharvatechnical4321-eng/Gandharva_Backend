@@ -235,8 +235,12 @@ router.get('/webhook', (req, res) => {
 })
 
 router.post('/webhook', async (req, res) => {
-  const { entry } = req.body 
-  console.log(JSON.stringify(entry, null, 2))
+  const { entry } = req.body;
+  console.log('WhatsApp webhook received', {
+    entries: Array.isArray(entry) ? entry.length : 0,
+    hasMessage: Boolean(entry?.[0]?.changes?.[0]?.value?.messages?.length),
+    hasStatus: Boolean(entry?.[0]?.changes?.[0]?.value?.statuses?.length),
+  });
   if (!entry || entry.length === 0) {
     return res.status(400).send('Invalid Request')
   }
@@ -288,6 +292,11 @@ router.post('/webhook', async (req, res) => {
   if (messages) { 
     // Handle received messages
     // console.log({messages})
+    if (!contactInfo?.wa_id) {
+      console.error('WhatsApp message did not include contact information');
+      return res.status(200).send('Webhook acknowledged');
+    }
+
     if(messages.type==="interactive"){
       queue.add(async () => {
         console.log(`Processing message from ${contactInfo.wa_id}`);
@@ -559,7 +568,7 @@ async function receivedMessage(messages, contactInfo) {
       contact = new Contact({
         chatId: newChatId,
         tutorID:tutor?tutor.tutorID:"TI0000",
-        name: contactInfo.profile.name,
+        name: contactInfo.profile?.name || "Unknown",
         phone_number: `+${contactInfo.wa_id}`,
       });
       // if(!tutor){
@@ -570,7 +579,7 @@ async function receivedMessage(messages, contactInfo) {
       // }
       // Save the new contact in the session
       await contact.save({ session });
-      const msg= messages.text.body
+      const msg = messages.text?.body || `[${messages.type || "message"} received]`;
      if(contact.tutorID==="TI0000"){ 
      await writeSheetForUser([["","", newChatId, "NC"]])
      delay(300)

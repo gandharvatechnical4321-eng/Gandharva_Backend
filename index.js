@@ -498,6 +498,15 @@ app.get("/", (req, res) => {
   res.send("Server is running...");
 });
 
+// Lightweight process health check for Render and uptime monitoring.
+// It intentionally does not wait for MongoDB so the service can wake quickly.
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    database: mongoose.connection.readyState === 1 ? "connected" : "connecting",
+  });
+});
+
   
 // Handle Socket.IO connections
 io.on('connection', (socket) => {
