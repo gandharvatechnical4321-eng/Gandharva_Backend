@@ -1,6 +1,22 @@
 const express = require('express');
 const Task = require("../models/task");
 const router = express.Router();
+const fs = require("fs");
+const path = require("path");
+
+// This must be an approved template in WhatsApp Business Manager. Meta's
+// standard starter template is used by default and can be overridden in .env.
+const DEFAULT_WHATSAPP_TEMPLATE_NAME =
+  process.env.DEFAULT_WHATSAPP_TEMPLATE_NAME || "hello_world";
+const DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE =
+  process.env.DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE || "en_US";
+
+const getConfiguredTemplateFallback = () => ({
+  name: DEFAULT_WHATSAPP_TEMPLATE_NAME,
+  language: DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE,
+  category: "UTILITY",
+  source: "configured-fallback",
+});
 const mongoose = require("mongoose")
 const Contact = require('../models/contact'); // Contact schema
 const Message = require('../models/message'); // Message schema
@@ -20,8 +36,10 @@ const storage = multer.memoryStorage(); // Store file in memory, not disk
 const upload = multer({ storage });
 //write in googel sheet=====================================================
 const { google } = require('googleapis');
+const googleCredentialsPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE ||
+  path.join(__dirname, "..", "FolderLinkGeneration.json");
 const auth = new google.auth.GoogleAuth({
- keyFile: "./FolderLinkGeneration.json", // Replace with your JSON key file path
+ keyFile: googleCredentialsPath,
  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 function getIndianTime() {
@@ -30,6 +48,10 @@ function getIndianTime() {
 const sheets = google.sheets({ version: 'v4', auth });
 const SPREADSHEET_ID_FOR_PERDAY_CHAT = "1uMe5wh96NIPa7Vtgl7_z4Z69c6zD1izlae0CEGWTItM";
 async function writeContactToSheet(contact) {
+  if (!fs.existsSync(googleCredentialsPath)) {
+    return;
+  }
+
   try {
     const sheets = google.sheets({ version: "v4", auth });
 
@@ -63,6 +85,65 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
+// Return the approved templates for the configured WhatsApp sender. The
+// business account ID can be configured explicitly, or discovered from the
+// phone number ID when the access token has the required permission.
+router.get("/whatsapp-templates", authMiddleware, async (req, res) => {
+  try {
+    let businessAccountId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+
+    if (!businessAccountId) {
+      const phoneResponse = await axios.get(
+        `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}`,
+        {
+          params: {
+            fields: "whatsapp_business_account",
+            access_token: process.env.WHATSAPP_ACCESS_TOKEN,
+          },
+        }
+      );
+      businessAccountId = phoneResponse.data?.whatsapp_business_account?.id;
+    }
+
+    if (!businessAccountId) {
+      return res.json({
+        templates: [getConfiguredTemplateFallback()],
+        warning:
+          "WhatsApp Business Account ID is not configured. Showing the configured template; it must be approved in Meta.",
+      });
+    }
+
+    const templatesResponse = await axios.get(
+      `https://graph.facebook.com/v21.0/${businessAccountId}/message_templates`,
+      {
+        params: {
+          fields: "name,status,language,category",
+          limit: 100,
+          access_token: process.env.WHATSAPP_ACCESS_TOKEN,
+        },
+      }
+    );
+
+    const templates = (templatesResponse.data?.data || [])
+      .filter((template) => template.status === "APPROVED")
+      .map((template) => ({
+        name: template.name,
+        language: template.language,
+        category: template.category,
+      }));
+
+    return res.json({ templates });
+  } catch (error) {
+    const details = error.response?.data?.error?.message || error.message;
+    console.error("Error loading WhatsApp templates:", details);
+    return res.json({
+      templates: [getConfiguredTemplateFallback()],
+      warning: "Could not load approved templates from Meta. Using the configured template.",
+      details,
+    });
+  }
+});
+
 
 //to send message from frontend to Mongodb and then send message to clint
 const MAX_RETRIES = 3;
@@ -79,10 +160,12 @@ router.post("/sendmessage",authMiddleware, async (req, res) => {
       let {phone_number} = req.body
       console.log( {phone_number, message, direction ,components }) 
       if (typeof phone_number !== "string" || !phone_number.trim() || !message || !direction) {
+        session.endSession();
         return res.status(400).json({ error: 'Missing required fields.' });
       } 
       phone_number = decryptFunction(phone_number)
       if (!/^\+\d{1,15}$/.test(phone_number)) {
+        session.endSession();
         return res.status(400).json({ error: 'Invalid phone number.' });
       }
       // Find the contact by phone number
@@ -126,8 +209,23 @@ router.post("/sendmessage",authMiddleware, async (req, res) => {
       // Send the message 
       let result;
       if (message.text.body.startsWith("/")) {
-        const templateName = message.text.body.replace("/", "").split(" ")[0];
-        result = await sendTemplateMessage(phone_number, templateName, "en_US", components);
+        const requestedTemplateName = message.text.body
+          .slice(1)
+          .trim()
+          .split(/\s+/)[0];
+        const templateName =
+          requestedTemplateName === "hello_world" || !requestedTemplateName
+            ? DEFAULT_WHATSAPP_TEMPLATE_NAME
+            : requestedTemplateName;
+
+        // Store the template actually sent rather than the obsolete alias.
+        message.text.body = `/${templateName}`;
+        result = await sendTemplateMessage(
+          phone_number,
+          templateName,
+          DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE,
+          components
+        );
       } else {
         result = await sendMessage(phone_number, message,contact.chatId);
       } 
@@ -199,13 +297,22 @@ router.post("/sendfirstmessage",authMiddleware, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();  
     try {
-      const { message, direction ,components , name } = req.body;
+      const {
+        message,
+        direction,
+        components,
+        name,
+        template_language: requestedTemplateLanguage,
+      } = req.body;
       let {phone_number} = req.body
       console.log( {phone_number, message, direction ,components }) 
-      if (!phone_number || !message || !direction) {
+      if (typeof phone_number !== "string" || !phone_number.trim() || !message || !direction) {
         return res.status(400).json({ error: 'Missing required fields.' });
       } 
       phone_number = decryptFunction(phone_number)
+      if (!/^\+\d{1,15}$/.test(phone_number)) {
+        return res.status(400).json({ error: 'Invalid phone number.' });
+      }
       // Find the contact by phone number
       
       let contact = await Contact.findOne({ phone_number }).session(session);
@@ -245,16 +352,38 @@ router.post("/sendfirstmessage",authMiddleware, async (req, res) => {
     }
       //===========================================================
       // Send the message 
+      let result;
       if (message.text.body.startsWith("/")) {
-        const templateName = message.text.body.replace("/", "").split(" ")[0];
-        result = await sendTemplateMessage(phone_number, templateName, "en_US", components);
-      } else {
-        result = await sendMessage(phone_number, message,contact.chatId);
-      } 
+  const requestedTemplateName = message.text.body
+    .slice(1)
+    .trim()
+    .split(/\s+/)[0];
+  const templateName = requestedTemplateName || DEFAULT_WHATSAPP_TEMPLATE_NAME;
+
+  console.log("WhatsApp template:", {
+    templateName,
+    language: requestedTemplateLanguage || DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE,
+    components
+  });
+
+  result = await sendTemplateMessage(
+    phone_number,
+    templateName,
+    requestedTemplateLanguage || DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE,
+    components
+  );
+} else {
+  result = await sendMessage(
+    phone_number,
+    message,
+    contact.chatId
+  );
+}
       console.log({ resultttttttttttttttt: JSON.stringify(result, null, 2) });
  
-      if (!result || !result.messages || !result.messages[0]?.id) {
-        throw new Error("Message could not be sent");
+      if (!result || result.success === false || !result.messages?.[0]?.id) {
+        const providerError = result?.error?.error?.message || result?.error?.message || result?.error;
+        throw new Error(providerError || "Message could not be sent");
       }
 
       // Save the message
@@ -683,6 +812,7 @@ async function sendMessage(to, message,chatid) {
       'Authorization': `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
       'Content-Type': 'application/json'
     },
+      timeout: 15000,
     data: JSON.stringify({
       messaging_product: 'whatsapp',
       to: recipient,
@@ -690,7 +820,6 @@ async function sendMessage(to, message,chatid) {
       text: {
         body:sendHiddenMsg(message.text.body,chatid)
       },
-      timeout: 15000,
     })
   })
   return result.data; 
