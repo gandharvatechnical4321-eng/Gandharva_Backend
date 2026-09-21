@@ -134,14 +134,33 @@ router.get("/whatsapp-templates", authMiddleware, async (req, res) => {
 
     return res.json({ templates });
   } catch (error) {
-    const details = error.response?.data?.error?.message || error.message;
-    console.error("Error loading WhatsApp templates:", details);
-    return res.json({
-      templates: [getConfiguredTemplateFallback()],
-      warning: "Could not load approved templates from Meta. Using the configured template.",
-      details,
-    });
-  }
+  const details =
+    error.response?.data?.error?.message ||
+    error.message ||
+    "Failed to load WhatsApp templates";
+
+  console.error(
+    "Error loading WhatsApp templates:",
+    JSON.stringify(error.response?.data || error.message, null, 2)
+  );
+
+  return res.status(error.response?.status || 500).json({
+    error: "Could not load WhatsApp templates.",
+    details,
+  });
+}
+
+
+  
+  // catch (error) {
+  //   const details = error.response?.data?.error?.message || error.message;
+  //   console.error("Error loading WhatsApp templates:", details);
+  //   return res.json({
+  //     templates: [getConfiguredTemplateFallback()],
+  //     warning: "Could not load approved templates from Meta. Using the configured template.",
+  //     details,
+  //   });
+  // }
 });
 
 
@@ -434,10 +453,29 @@ router.post("/sendfirstmessage",authMiddleware, async (req, res) => {
           code: error.response?.data?.error?.code || error.code,
           status: error.response?.status,
         });
-        return res.status(502).json({
-          error: 'Message could not be sent or saved.',
-          details,
-        });
+        const metaError = error.response?.data?.error;
+
+return res.status(400).json({
+  error: "WhatsApp API rejected the message.",
+  details:
+    metaError?.message ||
+    error.message ||
+    "Unknown WhatsApp API error",
+  code:
+    metaError?.code ||
+    error.code ||
+    null,
+  error_subcode:
+    metaError?.error_subcode || null,
+  fbtrace_id:
+    metaError?.fbtrace_id || null,
+});
+
+
+        // return res.status(502).json({
+        //   error: 'Message could not be sent or saved.',
+        //   details,
+        // });
       }
     }
   }
@@ -827,21 +865,72 @@ async function sendMessage(to, message,chatid) {
 
 
 //to send template
+// async function sendTemplateMessage(to, templateName, languageCode, components = []) {
+//   try {
+//     console.log("comming...")
+//     const response = await axios.post(
+//       `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`,
+//       {
+//         messaging_product: "whatsapp",
+//         to: String(to || '').replace(/^\+/, ''),
+//         type: "template", 
+//         template: {
+//           name: templateName,
+//           language: { code: languageCode },
+//           components,
+//         },
+//       },
+//       {
+//         headers: {
+//           Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+//           "Content-Type": "application/json",
+//         },
+//         timeout: 15000,
+//       }
+//     );
+
+//     return response.data;
+//   } catch (error) {
+//     console.error("Error sending template message:", error.response?.data || error.message);
+//     return { success: false, error: error.response?.data || error.message };
+//   }
+// }
+
 async function sendTemplateMessage(to, templateName, languageCode, components = []) {
   try {
-    console.log("comming...")
+    const payload = {
+      messaging_product: "whatsapp",
+      to: String(to || "").replace(/^\+/, ""),
+      type: "template",
+      template: {
+        name: templateName,
+        language: {
+          code: languageCode,
+        },
+        components: Array.isArray(components) ? components : [],
+      },
+    };
+
+    console.log("========== WHATSAPP TEMPLATE REQUEST ==========");
+    console.log("PHONE_NUMBER_ID:", process.env.PHONE_NUMBER_ID);
+    console.log("TEMPLATE NAME:", templateName);
+    console.log("LANGUAGE:", languageCode);
+    console.log("COMPONENTS:", JSON.stringify(components, null, 2));
+    console.log(
+      "TOKEN EXISTS:",
+      Boolean(process.env.WHATSAPP_ACCESS_TOKEN)
+    );
+    console.log(
+      "TOKEN PREFIX:",
+      process.env.WHATSAPP_ACCESS_TOKEN
+        ? process.env.WHATSAPP_ACCESS_TOKEN.substring(0, 8) + "..."
+        : "MISSING"
+    );
+    console.log("PAYLOAD:", JSON.stringify(payload, null, 2));
+
     const response = await axios.post(
       `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: String(to || '').replace(/^\+/, ''),
-        type: "template", 
-        template: {
-          name: templateName,
-          language: { code: languageCode },
-          components,
-        },
-      },
+      payload,
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
@@ -851,12 +940,71 @@ async function sendTemplateMessage(to, templateName, languageCode, components = 
       }
     );
 
+    console.log(
+      "========== WHATSAPP SUCCESS ==========",
+      JSON.stringify(response.data, null, 2)
+    );
+
     return response.data;
   } catch (error) {
-    console.error("Error sending template message:", error.response?.data || error.message);
-    return { success: false, error: error.response?.data || error.message };
+    console.error("========== WHATSAPP API ERROR ==========");
+
+    console.error(
+      "STATUS:",
+      error.response?.status
+    );
+
+    console.error(
+      "META ERROR:",
+      JSON.stringify(error.response?.data, null, 2)
+    );
+
+    console.error(
+      "MESSAGE:",
+      error.message
+    );
+
+    return {
+      success: false,
+      error: error.response?.data || {
+        message: error.message,
+      },
+    };
   }
 }
+
+
+router.get("/whatsapp-debug", authMiddleware, async (req, res) => {
+  try {
+    const response = await axios.get(
+      `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}`,
+      {
+        params: {
+          fields: "id,display_phone_number,verified_name,whatsapp_business_account",
+          access_token: process.env.WHATSAPP_ACCESS_TOKEN,
+        },
+      }
+    );
+
+    return res.json({
+      success: true,
+      data: response.data,
+    });
+  } catch (error) {
+    console.error(
+      "WhatsApp debug error:",
+      JSON.stringify(error.response?.data || error.message, null, 2)
+    );
+
+    return res.status(400).json({
+      success: false,
+      status: error.response?.status,
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+
 //to send MEdia message
 //to sent TEXT message
 async function forwardmessage(to, message) {
