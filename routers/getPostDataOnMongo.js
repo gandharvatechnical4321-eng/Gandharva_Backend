@@ -974,16 +974,22 @@ async function sendTemplateMessage(to, templateName, languageCode, components = 
 }
 
 
-router.get("/whatsapp-debug", authMiddleware, async (req, res) => {
+router.get("/whatsapp-debug", async (req, res) => {
   try {
     const response = await axios.get(
       `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}`,
       {
         params: {
-          fields: "id,display_phone_number,verified_name,whatsapp_business_account",
+          fields:
+            "id,display_phone_number,verified_name,whatsapp_business_account",
           access_token: process.env.WHATSAPP_ACCESS_TOKEN,
         },
       }
+    );
+
+    console.log(
+      "WHATSAPP DEBUG:",
+      JSON.stringify(response.data, null, 2)
     );
 
     return res.json({
@@ -992,18 +998,17 @@ router.get("/whatsapp-debug", authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error(
-      "WhatsApp debug error:",
+      "WHATSAPP DEBUG ERROR:",
       JSON.stringify(error.response?.data || error.message, null, 2)
     );
 
-    return res.status(400).json({
+    return res.status(error.response?.status || 500).json({
       success: false,
       status: error.response?.status,
-      error: error.response?.data || error.message,
+      data: error.response?.data || error.message,
     });
   }
 });
-
 
 //to send MEdia message
 //to sent TEXT message
